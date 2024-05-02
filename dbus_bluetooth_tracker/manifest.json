@@ -1,0 +1,9 @@
+{
+  "name": "Bluetooth Tracker",
+  "version": "0.1.0",
+  "documentation": "https://www.home-assistant.io/integrations/bluetooth_tracker",
+  "domain": "dbus_bluetooth_tracker",
+  "iot_class": "local_polling",
+  "dependencies": ["bluetooth"],
+  "requirements": ["dbus-fast>=1.87.0"]
+}
