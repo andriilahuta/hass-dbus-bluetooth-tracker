@@ -84,6 +84,7 @@ class BtDeviceTracker:
                     member='ConnectDevice', signature='a{sv}', body=[{'Address': Variant('s', self._mac)}],
                 ))
         except asyncio.TimeoutError:
+            logger.debug('Timeout connecting to %s', self._mac)
             return False
 
         if res.message_type == MessageType.METHOD_RETURN:
@@ -92,6 +93,7 @@ class BtDeviceTracker:
             return True
 
         if res.message_type == MessageType.ERROR:
+            logger.debug('Error: %s', res.error_name)
             if res.error_name == 'org.freedesktop.DBus.Error.UnknownMethod':
                 logger.error('; '.join(res.body))
             if res.error_name == f'{BLUEZ_SERVICE}.Error.AlreadyExists':
@@ -169,7 +171,9 @@ async def async_setup_scanner(
         """Discover Bluetooth devices and update status."""
         logger.debug('Performing Bluetooth devices update')
         adapters = await bluetooth_api._get_manager(hass).async_get_bluetooth_adapters()
+        logger.debug('Using Bluetooth adapters: %s', list(adapters))
         bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        logger.debug('Connected(%s) to D-Bus: %s', bus.connected, bus.unique_name)
         now = dt_util.utcnow()
 
         def _is_recently_seen(mac: str) -> bool:
@@ -190,6 +194,7 @@ async def async_setup_scanner(
             bus.disconnect()
             await bus.wait_for_disconnect()
 
+        logger.debug('Seen devices @ %s: %s', now, seen_devices)
         for mac in seen_devices:
             if _is_recently_seen(mac):
                 name = devices_to_track.get(mac, mac)
@@ -214,6 +219,7 @@ async def async_setup_scanner(
 
     @callback
     def _async_handle_stop(event: Event):
+        logger.debug('Stopping Bluetooth tasks')
         for cancel in cancels:
             cancel()
 
