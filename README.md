@@ -8,6 +8,7 @@ device_tracker:
     # Poll less frequently when the device has been already seen recently
     seen_interval_seconds: 60
     consider_home: 90
+    device_connect_timeout: 5
 ```
 
 #### Caveats:

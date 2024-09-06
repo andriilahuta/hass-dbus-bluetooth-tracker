@@ -42,12 +42,16 @@ ADAPTER_INTERFACE = f'{BLUEZ_SERVICE}.Adapter1'
 DEVICE_INTERFACE = f'{BLUEZ_SERVICE}.Device1'
 
 CONF_SEEN_SCAN_INTERVAL = 'seen_interval_seconds'
+CONF_DEVICE_CONNECT_TIMEOUT = 'device_connect_timeout'
+
 SEEN_SCAN_INTERVAL = timedelta()
+DEVICE_CONNECT_TIMEOUT = timedelta(seconds=5)
 
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
     {
         vol.Optional(CONF_SCAN_INTERVAL, default=SCAN_INTERVAL): cv.time_period,
         vol.Optional(CONF_SEEN_SCAN_INTERVAL, default=SEEN_SCAN_INTERVAL): cv.time_period,
+        vol.Optional(CONF_DEVICE_CONNECT_TIMEOUT, default=DEVICE_CONNECT_TIMEOUT): cv.time_period,
         vol.Optional(CONF_CONSIDER_HOME, default=DEFAULT_CONSIDER_HOME): vol.All(
             cv.time_period, cv.positive_timedelta
         ),
@@ -57,11 +61,10 @@ PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
 
 
 class BtDeviceTracker:
-    connect_timeout = 5
-
-    def __init__(self, bus: MessageBus, adapter: str, mac: str):
+    def __init__(self, bus: MessageBus, adapter: str, mac: str, connect_timeout: timedelta = DEVICE_CONNECT_TIMEOUT):
         self._bus = bus
         self._mac = mac
+        self._connect_timeout = connect_timeout
 
         self._adapter_path = f'{BLUEZ_PATH}/{adapter}'
         self._device_path = f'{self._adapter_path}/dev_{mac.replace(":", "_")}'
@@ -75,7 +78,7 @@ class BtDeviceTracker:
 
     async def _connect(self) -> bool:
         try:
-            async with asyncio.timeout(self.connect_timeout):
+            async with asyncio.timeout(self._connect_timeout.seconds):
                 res = await self._bus.call(Message(
                     destination=BLUEZ_SERVICE, interface=ADAPTER_INTERFACE, path=self._adapter_path,
                     member='ConnectDevice', signature='a{sv}', body=[{'Address': Variant('s', self._mac)}],
@@ -153,6 +156,7 @@ async def async_setup_scanner(
     """Set up the Bluetooth Scanner."""
     interval: timedelta = config[CONF_SCAN_INTERVAL]
     seen_interval: timedelta = config[CONF_SEEN_SCAN_INTERVAL]
+    connect_timeout: timedelta = config[CONF_DEVICE_CONNECT_TIMEOUT]
     update_bluetooth_lock = asyncio.Lock()
 
     devices_to_track, _ = await get_tracking_devices(hass)
@@ -180,7 +184,7 @@ async def async_setup_scanner(
                 for mac in devices_to_track:
                     if _is_recently_seen(mac):
                         continue
-                    if await BtDeviceTracker(bus, adapter, mac).ping():
+                    if await BtDeviceTracker(bus, adapter, mac, connect_timeout).ping():
                         seen_devices[mac] = now
         finally:
             bus.disconnect()
