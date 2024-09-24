@@ -11,7 +11,7 @@ from dbus_fast.aio import MessageBus
 
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
-from habluetooth import BaseHaScanner
+from habluetooth import HaScanner
 from homeassistant.components.bluetooth import api as bluetooth_api
 from homeassistant.components.device_tracker import (
     CONF_CONSIDER_HOME,
@@ -148,6 +148,8 @@ async def get_tracking_devices(hass: HomeAssistant) -> tuple[dict[str, str], dic
         if not device.track and device.mac is not None
     }
 
+    logger.debug('devices_to_track: %s', devices_to_track)
+    logger.debug('devices_to_not_track: %s', devices_to_not_track)
     return devices_to_track, devices_to_not_track
 
 
@@ -157,8 +159,12 @@ async def see_device(hass: HomeAssistant, async_see: AsyncSeeCallback, mac: str,
     await async_see(mac=BT_PREFIX + mac, host_name=device_name, source_type=SourceType.BLUETOOTH)
 
 
-def get_bluetooth_scanners(hass: HomeAssistant) -> set[BaseHaScanner]:
-    return bluetooth_api._get_manager(hass)._connectable_scanners.copy()
+def get_bluetooth_scanners(hass: HomeAssistant) -> set[HaScanner]:
+    return {
+        scanner
+        for scanner in bluetooth_api._get_manager(hass)._connectable_scanners
+        if isinstance(scanner, HaScanner)
+    }
 
 
 async def async_setup_scanner(
