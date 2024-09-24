@@ -89,7 +89,7 @@ class BtDeviceTracker:
                     member='ConnectDevice', signature='a{sv}', body=[{'Address': Variant('s', self._mac)}],
                 ))
         except asyncio.TimeoutError:
-            logger.debug('Timeout connecting to %s', self._mac)
+            logger.debug('Timeout connecting to %s with %s', self._mac, self._adapter_path)
             return False
 
         if res.message_type == MessageType.METHOD_RETURN:
@@ -106,7 +106,9 @@ class BtDeviceTracker:
                 await asyncio.sleep(1)
                 return await self._connect()
             else:
-                logger.error('Failed connecting to %s: %s, %s', self._mac, res.error_name, ', '.join(res.body))
+                body = ', '.join(res.body) or '<empty>'
+                logger.error('Failed connecting to %s with %s: %s, %s',
+                             self._mac, self._adapter_path, res.error_name, body)
             return False
 
         return False
@@ -156,7 +158,7 @@ async def see_device(hass: HomeAssistant, async_see: AsyncSeeCallback, mac: str,
 
 
 def get_bluetooth_scanners(hass: HomeAssistant) -> set[BaseHaScanner]:
-    return bluetooth_api._get_manager(hass)._connectable_scanners
+    return bluetooth_api._get_manager(hass)._connectable_scanners.copy()
 
 
 async def async_setup_scanner(
