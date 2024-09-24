@@ -6,12 +6,12 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 import voluptuous as vol
-from bluetooth_adapters import AdapterDetails
 from dbus_fast import BusType, Message, Variant, MessageType
 from dbus_fast.aio import MessageBus
 
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
+from habluetooth import BaseHaScanner
 from homeassistant.components.bluetooth import api as bluetooth_api
 from homeassistant.components.device_tracker import (
     CONF_CONSIDER_HOME,
@@ -48,18 +48,15 @@ SERVICE_INVALIDATE_BLUETOOTH_CACHE = 'invalidate_bluetooth_cache'
 
 CONF_SEEN_SCAN_INTERVAL = 'seen_interval_seconds'
 CONF_DEVICE_CONNECT_TIMEOUT = 'device_connect_timeout'
-CONF_ADAPTER_TIMEOUT = 'adapter_timeout'
 
 SEEN_SCAN_INTERVAL = timedelta()
 DEVICE_CONNECT_TIMEOUT = timedelta(seconds=5)
-ADAPTER_TIMEOUT = timedelta(seconds=5)
 
 PLATFORM_SCHEMA = cv.PLATFORM_SCHEMA.extend(
     {
         vol.Optional(CONF_SCAN_INTERVAL, default=SCAN_INTERVAL): cv.time_period,
         vol.Optional(CONF_SEEN_SCAN_INTERVAL, default=SEEN_SCAN_INTERVAL): cv.time_period,
         vol.Optional(CONF_DEVICE_CONNECT_TIMEOUT, default=DEVICE_CONNECT_TIMEOUT): cv.time_period,
-        vol.Optional(CONF_ADAPTER_TIMEOUT, default=ADAPTER_TIMEOUT): cv.time_period,
         vol.Optional(CONF_CONSIDER_HOME, default=DEFAULT_CONSIDER_HOME): vol.All(
             cv.time_period, cv.positive_timedelta
         ),
@@ -78,7 +75,7 @@ class BtDeviceTracker:
         self._device_path = f'{self._adapter_path}/dev_{mac.replace(":", "_")}'
 
     async def ping(self) -> bool:
-        logger.debug('Pinging %s', self._mac)
+        logger.debug('Pinging %s with %s', self._mac, self._adapter_path)
         try:
             return await self._connect()
         finally:
@@ -101,14 +98,15 @@ class BtDeviceTracker:
             return True
 
         if res.message_type == MessageType.ERROR:
-            logger.debug('Error: %s', res.error_name)
             if res.error_name == 'org.freedesktop.DBus.Error.UnknownMethod':
                 logger.error('; '.join(res.body))
-            if res.error_name == f'{BLUEZ_SERVICE}.Error.AlreadyExists':
+            elif res.error_name == f'{BLUEZ_SERVICE}.Error.AlreadyExists':
                 logger.info('Device %s already exists, reconnecting', self._device_path)
                 await self._disconnect()
                 await asyncio.sleep(1)
                 return await self._connect()
+            else:
+                logger.error('Failed connecting to %s: %s, %s', self._mac, res.error_name, ', '.join(res.body))
             return False
 
         return False
@@ -157,17 +155,8 @@ async def see_device(hass: HomeAssistant, async_see: AsyncSeeCallback, mac: str,
     await async_see(mac=BT_PREFIX + mac, host_name=device_name, source_type=SourceType.BLUETOOTH)
 
 
-async def get_bluetooth_adapters(
-        hass: HomeAssistant,
-        timeout: timedelta = timedelta(seconds=5),
-        cached: bool = True,
-) -> dict[str, AdapterDetails]:
-    try:
-        async with asyncio.timeout(timeout.seconds):
-            return await bluetooth_api._get_manager(hass).async_get_bluetooth_adapters(cached)
-    except asyncio.TimeoutError:
-        logger.warning('Bluetooth integration timeout')
-        return {}
+def get_bluetooth_scanners(hass: HomeAssistant) -> set[BaseHaScanner]:
+    return bluetooth_api._get_manager(hass)._connectable_scanners
 
 
 async def async_setup_scanner(
@@ -180,7 +169,6 @@ async def async_setup_scanner(
     interval: timedelta = config[CONF_SCAN_INTERVAL]
     seen_interval: timedelta = config[CONF_SEEN_SCAN_INTERVAL]
     connect_timeout: timedelta = config[CONF_DEVICE_CONNECT_TIMEOUT]
-    bt_timeout: timedelta = config[CONF_ADAPTER_TIMEOUT]
     update_bluetooth_lock = asyncio.Lock()
 
     devices_to_track, _ = await get_tracking_devices(hass)
@@ -193,14 +181,14 @@ async def async_setup_scanner(
         """Discover Bluetooth devices and update status."""
         logger.debug('Performing Bluetooth devices update')
 
-        adapters = await get_bluetooth_adapters(hass, bt_timeout)
-        if not adapters:
-            logger.warning('No Bluetooth adapters found')
+        scanners = get_bluetooth_scanners(hass)
+        if not scanners:
+            logger.warning('No Bluetooth scanners found')
             return
-        logger.debug('Using Bluetooth adapters: %s', list(adapters))
+        logger.debug('Using Bluetooth adapters: %s', [scanner.adapter for scanner in scanners])
 
         bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        logger.debug('Connected(%s) to D-Bus: %s', bus.connected, bus.unique_name)
+        logger.debug('D-Bus: connected: %s, name: %s', bus.connected, bus.unique_name)
 
         now = dt_util.utcnow()
 
@@ -212,11 +200,11 @@ async def async_setup_scanner(
             return now - seen_devices[mac] <= seen_interval
 
         try:
-            for adapter in adapters:
+            for scanner in scanners:
                 for mac in devices_to_track:
                     if _is_recently_seen(mac):
                         continue
-                    if await BtDeviceTracker(bus, adapter, mac, connect_timeout).ping():
+                    if await BtDeviceTracker(bus, scanner.adapter, mac, connect_timeout).ping():
                         seen_devices[mac] = now
         finally:
             bus.disconnect()
@@ -242,8 +230,7 @@ async def async_setup_scanner(
             await perform_bluetooth_update()
 
     async def invalidate_bluetooth_cache(service: ServiceCall):
-        logger.info('Invalidating Bluetooth cache')
-        await get_bluetooth_adapters(hass, bt_timeout, cached=False)
+        logger.error('Not implemented')
 
     cancels: set[Callable[[], None]] = set()
 
