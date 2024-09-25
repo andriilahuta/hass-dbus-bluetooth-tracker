@@ -138,8 +138,10 @@ def is_bluetooth_device(device: Device) -> bool:
 async def get_tracking_devices(hass: HomeAssistant) -> tuple[dict[str, str], dict[str, str]]:
     """Load all known devices."""
     yaml_path = hass.config.path(YAML_DEVICES)
+    logger.debug('Loading devices from %s', yaml_path)
 
     devices = await async_load_config(yaml_path, hass, timedelta(0))
+    logger.debug('Loaded devices: %s', [device.mac for device in devices if devices])
     bluetooth_devices = [device for device in devices if is_bluetooth_device(device)]
 
     devices_to_track: dict[str, str] = {
@@ -153,8 +155,8 @@ async def get_tracking_devices(hass: HomeAssistant) -> tuple[dict[str, str], dic
         if not device.track and device.mac is not None
     }
 
-    logger.debug('devices_to_track: %s', devices_to_track)
-    logger.debug('devices_to_not_track: %s', devices_to_not_track)
+    logger.debug('devices_to_track: %s', list(devices_to_track))
+    logger.debug('devices_to_not_track: %s', list(devices_to_not_track))
     return devices_to_track, devices_to_not_track
 
 
@@ -228,7 +230,7 @@ async def async_setup_scanner(
             except asyncio.TimeoutError:
                 logger.error('Timeout disconnecting from D-Bus')
 
-        logger.debug('Seen devices @ %s: %s', now, seen_devices)
+        logger.debug('Seen devices @ %s: %s', now, {k: v.isoformat() for k, v in seen_devices.items()})
         for mac in seen_devices:
             if _is_recently_seen(mac):
                 name = devices_to_track.get(mac, mac)
