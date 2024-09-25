@@ -222,7 +222,11 @@ async def async_setup_scanner(
         finally:
             bus.disconnect()
             logger.debug('Disconnecting from D-Bus')
-            await bus.wait_for_disconnect()
+            try:
+                async with asyncio.timeout(connect_timeout.seconds):
+                    await bus.wait_for_disconnect()
+            except asyncio.TimeoutError:
+                logger.error('Timeout disconnecting from D-Bus')
 
         logger.debug('Seen devices @ %s: %s', now, seen_devices)
         for mac in seen_devices:
