@@ -114,15 +114,20 @@ class BtDeviceTracker:
         return False
 
     async def _disconnect(self) -> bool:
-        await self._bus.call(Message(
-            destination=BLUEZ_SERVICE, interface=DEVICE_INTERFACE, path=self._device_path,
-            member='Disconnect',
-        ))
-        res = await self._bus.call(Message(
-            destination=BLUEZ_SERVICE, interface=ADAPTER_INTERFACE, path=self._adapter_path,
-            member='RemoveDevice', signature='o', body=[self._device_path],
-        ))
-        return res.message_type == MessageType.METHOD_RETURN
+        try:
+            async with asyncio.timeout(self._connect_timeout.seconds):
+                await self._bus.call(Message(
+                    destination=BLUEZ_SERVICE, interface=DEVICE_INTERFACE, path=self._device_path,
+                    member='Disconnect',
+                ))
+                res = await self._bus.call(Message(
+                    destination=BLUEZ_SERVICE, interface=ADAPTER_INTERFACE, path=self._adapter_path,
+                    member='RemoveDevice', signature='o', body=[self._device_path],
+                ))
+                return res.message_type == MessageType.METHOD_RETURN
+        except asyncio.TimeoutError:
+            logger.debug('Timeout disconnecting from %s with %s', self._mac, self._adapter_path)
+            return False
 
 
 def is_bluetooth_device(device: Device) -> bool:
@@ -216,6 +221,7 @@ async def async_setup_scanner(
                         seen_devices[mac] = now
         finally:
             bus.disconnect()
+            logger.debug('Disconnecting from D-Bus')
             await bus.wait_for_disconnect()
 
         logger.debug('Seen devices @ %s: %s', now, seen_devices)
