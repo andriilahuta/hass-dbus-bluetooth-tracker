@@ -29,7 +29,7 @@ from homeassistant.components.device_tracker.legacy import (
     async_load_config,
 )
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import Event, HomeAssistant, callback, ServiceCall
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
@@ -42,9 +42,6 @@ BLUEZ_PATH = '/org/bluez'
 BLUEZ_SERVICE = 'org.bluez'
 ADAPTER_INTERFACE = f'{BLUEZ_SERVICE}.Adapter1'
 DEVICE_INTERFACE = f'{BLUEZ_SERVICE}.Device1'
-
-DOMAIN = 'dbus_bluetooth_tracker'
-SERVICE_INVALIDATE_BLUETOOTH_CACHE = 'invalidate_bluetooth_cache'
 
 CONF_SEEN_SCAN_INTERVAL = 'seen_interval_seconds'
 CONF_DEVICE_CONNECT_TIMEOUT = 'device_connect_timeout'
@@ -249,8 +246,6 @@ async def async_setup_scanner(
         async with update_bluetooth_lock:
             await perform_bluetooth_update()
 
-    async def invalidate_bluetooth_cache(service: ServiceCall):
-        logger.error('Not implemented')
 
     cancels: set[Callable[[], None]] = set()
 
@@ -268,6 +263,5 @@ async def async_setup_scanner(
     _async_handle_start()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_handle_stop)
     hass.async_create_task(update_bluetooth())
-    hass.services.async_register(DOMAIN, SERVICE_INVALIDATE_BLUETOOTH_CACHE, invalidate_bluetooth_cache)
 
     return True
