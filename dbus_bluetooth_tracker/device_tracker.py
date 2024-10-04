@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 import voluptuous as vol
@@ -10,6 +11,7 @@ from dbus_fast.aio import MessageBus
 
 import homeassistant.helpers.config_validation as cv
 import homeassistant.util.dt as dt_util
+from habluetooth import HaScanner
 from homeassistant.components.bluetooth import api as bluetooth_api
 from homeassistant.components.device_tracker import (
     CONF_CONSIDER_HOME,
@@ -70,7 +72,7 @@ class BtDeviceTracker:
         self._device_path = f'{self._adapter_path}/dev_{mac.replace(":", "_")}'
 
     async def ping(self) -> bool:
-        logger.debug('Pinging %s', self._mac)
+        logger.debug('Pinging %s with %s', self._mac, self._adapter_path)
         try:
             return await self._connect()
         finally:
@@ -84,6 +86,7 @@ class BtDeviceTracker:
                     member='ConnectDevice', signature='a{sv}', body=[{'Address': Variant('s', self._mac)}],
                 ))
         except asyncio.TimeoutError:
+            logger.debug('Timeout connecting to %s with %s', self._mac, self._adapter_path)
             return False
 
         if res.message_type == MessageType.METHOD_RETURN:
@@ -94,25 +97,34 @@ class BtDeviceTracker:
         if res.message_type == MessageType.ERROR:
             if res.error_name == 'org.freedesktop.DBus.Error.UnknownMethod':
                 logger.error('; '.join(res.body))
-            if res.error_name == f'{BLUEZ_SERVICE}.Error.AlreadyExists':
+            elif res.error_name == f'{BLUEZ_SERVICE}.Error.AlreadyExists':
                 logger.info('Device %s already exists, reconnecting', self._device_path)
                 await self._disconnect()
                 await asyncio.sleep(1)
                 return await self._connect()
+            else:
+                body = ', '.join(res.body) or '<empty>'
+                logger.error('Failed connecting to %s with %s: %s, %s',
+                             self._mac, self._adapter_path, res.error_name, body)
             return False
 
         return False
 
     async def _disconnect(self) -> bool:
-        await self._bus.call(Message(
-            destination=BLUEZ_SERVICE, interface=DEVICE_INTERFACE, path=self._device_path,
-            member='Disconnect',
-        ))
-        res = await self._bus.call(Message(
-            destination=BLUEZ_SERVICE, interface=ADAPTER_INTERFACE, path=self._adapter_path,
-            member='RemoveDevice', signature='o', body=[self._device_path],
-        ))
-        return res.message_type == MessageType.METHOD_RETURN
+        try:
+            async with asyncio.timeout(self._connect_timeout.seconds):
+                await self._bus.call(Message(
+                    destination=BLUEZ_SERVICE, interface=DEVICE_INTERFACE, path=self._device_path,
+                    member='Disconnect',
+                ))
+                res = await self._bus.call(Message(
+                    destination=BLUEZ_SERVICE, interface=ADAPTER_INTERFACE, path=self._adapter_path,
+                    member='RemoveDevice', signature='o', body=[self._device_path],
+                ))
+                return res.message_type == MessageType.METHOD_RETURN
+        except asyncio.TimeoutError:
+            logger.debug('Timeout disconnecting from %s with %s', self._mac, self._adapter_path)
+            return False
 
 
 def is_bluetooth_device(device: Device) -> bool:
@@ -147,6 +159,14 @@ async def see_device(hass: HomeAssistant, async_see: AsyncSeeCallback, mac: str,
     await async_see(mac=BT_PREFIX + mac, host_name=device_name, source_type=SourceType.BLUETOOTH)
 
 
+def get_bluetooth_scanners(hass: HomeAssistant) -> set[HaScanner]:
+    return {
+        scanner
+        for scanner in bluetooth_api._get_manager(hass)._connectable_scanners
+        if isinstance(scanner, HaScanner)
+    }
+
+
 async def async_setup_scanner(
         hass: HomeAssistant,
         config: ConfigType,
@@ -168,7 +188,13 @@ async def async_setup_scanner(
     async def perform_bluetooth_update():
         """Discover Bluetooth devices and update status."""
         logger.debug('Performing Bluetooth devices update')
-        adapters = await bluetooth_api._get_manager(hass).async_get_bluetooth_adapters()
+
+        scanners = get_bluetooth_scanners(hass)
+        if not scanners:
+            logger.warning('No Bluetooth scanners found')
+            return
+        logger.debug('Using Bluetooth adapters: %s', [scanner.adapter for scanner in scanners])
+
         bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
         now = dt_util.utcnow()
 
@@ -180,15 +206,19 @@ async def async_setup_scanner(
             return now - seen_devices[mac] <= seen_interval
 
         try:
-            for adapter in adapters:
+            for scanner in scanners:
                 for mac in devices_to_track:
                     if _is_recently_seen(mac):
                         continue
-                    if await BtDeviceTracker(bus, adapter, mac, connect_timeout).ping():
+                    if await BtDeviceTracker(bus, scanner.adapter, mac, connect_timeout).ping():
                         seen_devices[mac] = now
         finally:
             bus.disconnect()
-            await bus.wait_for_disconnect()
+            try:
+                async with asyncio.timeout(connect_timeout.seconds):
+                    await bus.wait_for_disconnect()
+            except asyncio.TimeoutError:
+                logger.error('Timeout disconnecting from D-Bus')
 
         for mac in seen_devices:
             if _is_recently_seen(mac):
@@ -208,15 +238,21 @@ async def async_setup_scanner(
         async with update_bluetooth_lock:
             await perform_bluetooth_update()
 
-    cancels = [
-        async_track_time_interval(hass, update_bluetooth, interval),
-    ]
+
+    cancels: set[Callable[[], None]] = set()
+
+    def _async_handle_start():
+        logger.debug('Starting Bluetooth tasks')
+        cancels.add(async_track_time_interval(hass, update_bluetooth, interval))
 
     @callback
     def _async_handle_stop(event: Event):
-        for cancel in cancels:
+        logger.debug('Stopping Bluetooth tasks')
+        while cancels:
+            cancel = cancels.pop()
             cancel()
 
+    _async_handle_start()
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_handle_stop)
     hass.async_create_task(update_bluetooth())
 
